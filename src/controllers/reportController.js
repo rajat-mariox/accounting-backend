@@ -3,6 +3,7 @@ const Invoice = require('../models/Invoice');
 const Payment = require('../models/Payment');
 const Client = require('../models/Client');
 const InventoryItem = require('../models/InventoryItem');
+const { SupplyActivity } = require('../models/Supplier');
 
 // GET /api/reports/dashboard
 const dashboardSummary = asyncHandler(async (_req, res) => {
@@ -70,6 +71,53 @@ const salesReport = asyncHandler(async (req, res) => {
   res.json(rows);
 });
 
+// GET /api/reports/sales-vs-purchase?months=6&year=YYYY
+// Returns `months` months starting from January of the requested year (default: current year).
+const salesVsPurchase = asyncHandler(async (req, res) => {
+  const months = Math.min(Math.max(parseInt(req.query.months, 10) || 6, 1), 24);
+  const year = parseInt(req.query.year, 10) || new Date().getFullYear();
+  const since = new Date(year, 0, 1, 0, 0, 0, 0);
+  const until = new Date(year, months, 1, 0, 0, 0, 0);
+
+  const [salesAgg, purchaseAgg] = await Promise.all([
+    Invoice.aggregate([
+      { $match: { createdDate: { $gte: since, $lt: until } } },
+      {
+        $group: {
+          _id: { y: { $year: '$createdDate' }, m: { $month: '$createdDate' } },
+          total: { $sum: '$amount' },
+        },
+      },
+    ]),
+    SupplyActivity.aggregate([
+      { $match: { date: { $gte: since, $lt: until } } },
+      {
+        $group: {
+          _id: { y: { $year: '$date' }, m: { $month: '$date' } },
+          total: { $sum: '$totalAmount' },
+        },
+      },
+    ]),
+  ]);
+
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const salesMap = new Map(salesAgg.map((r) => [`${r._id.y}-${r._id.m}`, r.total]));
+  const purchaseMap = new Map(purchaseAgg.map((r) => [`${r._id.y}-${r._id.m}`, r.total]));
+
+  const labels = [];
+  const sales = [];
+  const purchases = [];
+  for (let i = 0; i < months; i++) {
+    const d = new Date(since.getFullYear(), since.getMonth() + i, 1);
+    const key = `${d.getFullYear()}-${d.getMonth() + 1}`;
+    labels.push(monthNames[d.getMonth()]);
+    sales.push(salesMap.get(key) || 0);
+    purchases.push(purchaseMap.get(key) || 0);
+  }
+
+  res.json({ labels, sales, purchases });
+});
+
 // GET /api/reports/top-clients
 const topClients = asyncHandler(async (_req, res) => {
   const rows = await Invoice.aggregate([
@@ -87,4 +135,4 @@ const topClients = asyncHandler(async (_req, res) => {
   res.json(rows);
 });
 
-module.exports = { dashboardSummary, salesReport, topClients };
+module.exports = { dashboardSummary, salesReport, salesVsPurchase, topClients };
