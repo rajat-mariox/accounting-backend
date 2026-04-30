@@ -12,6 +12,11 @@ const userSchema = new mongoose.Schema(
     role: { type: String, enum: ROLES, default: 'Accountant' },
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
     lastLogin: { type: Date },
+    resetOtpHash: { type: String, select: false },
+    resetOtpExpiresAt: { type: Date, select: false },
+    resetOtpAttempts: { type: Number, default: 0, select: false },
+    resetSessionTokenHash: { type: String, select: false },
+    resetSessionExpiresAt: { type: Date, select: false },
   },
   { timestamps: true }
 );
