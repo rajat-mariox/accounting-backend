@@ -1,9 +1,9 @@
 const router = require('express').Router();
 const { listTransfers, createTransfer } = require('../controllers/transferController');
-const { protect } = require('../middleware/auth');
+const { protect, requirePermission, denyClients } = require('../middleware/auth');
 
-router.use(protect);
+router.use(protect, denyClients);
 
-router.route('/').get(listTransfers).post(createTransfer);
+router.route('/').get(listTransfers).post(requirePermission('inventory', 'create'), createTransfer);
 
 module.exports = router;

@@ -6,11 +6,15 @@ const {
   updateClient,
   deleteClient,
 } = require('../controllers/clientController');
-const { protect } = require('../middleware/auth');
+const { protect, requirePermission, denyClients } = require('../middleware/auth');
 
-router.use(protect);
+router.use(protect, denyClients);
 
-router.route('/').get(listClients).post(createClient);
-router.route('/:id').get(getClient).put(updateClient).delete(deleteClient);
+router.route('/').get(listClients).post(requirePermission('clients', 'create'), createClient);
+router
+  .route('/:id')
+  .get(getClient)
+  .put(requirePermission('clients', 'edit'), updateClient)
+  .delete(requirePermission('clients', 'delete'), deleteClient);
 
 module.exports = router;

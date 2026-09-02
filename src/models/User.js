@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
-const ROLES = ['Administrator', 'Manager', 'Accountant'];
+const ROLES = ['Administrator', 'Manager', 'Accountant', 'Client'];
 
 const userSchema = new mongoose.Schema(
   {
@@ -10,6 +10,11 @@ const userSchema = new mongoose.Schema(
     password: { type: String, required: true, minlength: 6, select: false },
     phone: { type: String, trim: true },
     role: { type: String, enum: ROLES, default: 'Accountant' },
+    // Set only for role 'Client': the Client record this portal login belongs to.
+    client: { type: mongoose.Schema.Types.ObjectId, ref: 'Client' },
+    // Per-user permission grid: { module: ['view','create',...] }. Empty means
+    // "fall back to the role preset" (see config/permissions.js).
+    permissions: { type: mongoose.Schema.Types.Mixed, default: {} },
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
     lastLogin: { type: Date },
     resetOtpHash: { type: String, select: false },
@@ -37,6 +42,8 @@ userSchema.virtual('roleTone').get(function () {
       return 'admin';
     case 'Manager':
       return 'manager';
+    case 'Client':
+      return 'client';
     case 'Accountant':
     default:
       return 'accountant';

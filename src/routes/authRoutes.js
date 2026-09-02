@@ -8,9 +8,11 @@ const {
   verifyOtp,
   resetPassword,
 } = require('../controllers/authController');
-const { protect } = require('../middleware/auth');
+const { protect, requirePermission } = require('../middleware/auth');
 
-router.post('/register', register);
+// Public self-registration is disabled: new users are created from the admin
+// panel by someone holding users.create permission.
+router.post('/register', protect, requirePermission('users', 'create'), register);
 router.post('/login', login);
 router.get('/me', protect, me);
 router.post('/change-password', protect, changePassword);

@@ -1,13 +1,15 @@
 {
   "name": "account-software-backend",
   "version": "1.0.0",
-  "description": "Backend API for the Account/ERP dashboard (Jubba group / AccounTech) — Node.js, Express, MongoDB, JWT.",
+  "description": "Backend API for the Account/ERP dashboard (Jubba group / AccounTech) \u2014 Node.js, Express, MongoDB, JWT.",
   "main": "src/server.js",
   "type": "commonjs",
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "seed": "node src/utils/seed.js"
+    "seed": "node src/utils/seed.js",
+    "migrate:stocks": "node src/utils/migrateStocks.js",
+    "renumber:invoices": "node src/utils/renumberInvoices.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

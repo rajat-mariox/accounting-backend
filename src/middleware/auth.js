@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const asyncHandler = require('express-async-handler');
 const User = require('../models/User');
+const { hasPermission } = require('../config/permissions');
 
 const protect = asyncHandler(async (req, res, next) => {
   let token;
@@ -48,4 +49,26 @@ const authorize = (...roles) => (req, res, next) => {
   next();
 };
 
-module.exports = { protect, authorize };
+// Permission-grid check (see config/permissions.js). Administrators always pass.
+const requirePermission = (module, action) => (req, res, next) => {
+  if (!req.user) {
+    res.status(401);
+    return next(new Error('Not authorized'));
+  }
+  if (!hasPermission(req.user, module, action)) {
+    res.status(403);
+    return next(new Error(`You do not have "${action}" permission for ${module}`));
+  }
+  next();
+};
+
+// Client portal logins only get invoices/payments; keep them off internal modules.
+const denyClients = (req, res, next) => {
+  if (req.user && req.user.role === 'Client') {
+    res.status(403);
+    return next(new Error('This section is not available to client accounts'));
+  }
+  next();
+};
+
+module.exports = { protect, authorize, requirePermission, denyClients };

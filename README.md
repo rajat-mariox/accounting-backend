@@ -16,6 +16,7 @@ cd backend
 cp .env.example .env       # then edit values
 npm install
 npm run seed               # optional: load demo data + admin user
+npm run migrate:stocks     # once, on existing databases: build per-warehouse stock breakdown
 npm run dev                # http://localhost:5000
 ```
 
@@ -52,12 +53,15 @@ All endpoints are JSON. Protected routes require `Authorization: Bearer <token>`
 
 ### Inventory — `/api/inventory` *(protected)*
 - `GET /` · `GET /overview` · `GET /:id` · `POST /` · `PUT /:id` · `DELETE /:id`
+- Items carry a per-warehouse breakdown `stocks: [{ warehouse, warehouseName, qty }]`; `stock` is always the total and `warehouse`/`warehouseName` point at the location holding the most.
+- `POST` / `PUT` accept either `stocks` (full breakdown) or `stock` + `warehouse` (sets that warehouse's quantity; for a single-location item this is simply its stock).
 
 ### Warehouses — `/api/warehouses` *(protected)*
 - `GET /` (with aggregated `totalItems` + `totalStock`) · `POST /` · `PUT /:id` · `DELETE /:id`
+- Each warehouse also returns `freeCapacity` (`null` when capacity is 0 = unlimited). Any item create/update, stock adjust, or transfer that would push a warehouse's total units above its `capacity` is rejected with 400.
 
 ### Transfers — `/api/transfers` *(protected)*
-- `GET /` · `POST /` — `{ item, from, to, qty, date? }`
+- `GET /` · `POST /` — `{ item, from, to, qty, date? }` (warehouse names). Moves only `qty` from `from` to `to`; rejects if `from` holds less than `qty`. Response includes `updatedItem`.
 
 ### Invoices — `/api/invoices` *(protected)*
 - `GET /` (`?status=&q=`) · `GET /:id` · `POST /` · `PUT /:id` · `DELETE /:id`
@@ -115,4 +119,4 @@ src/
 - Passwords are hashed with bcrypt (10 rounds) on save.
 - Audit logging is automatic for create/update/delete on most domains and on login.
 - Invoices store a denormalized `clientName`; payments store a denormalized `invoiceNumber` so list views avoid joins.
-- The transfer handler is a single-warehouse-per-item simplification — extend `InventoryItem` with a per-warehouse stock map if you need split inventory.
+- Stock is tracked per warehouse (`InventoryItem.stocks`). Warehouse totals aggregate that breakdown, so an item split across two warehouses counts once in each with its local quantity. Legacy items without a breakdown are read as a single location; run `npm run migrate:stocks` once to persist that.
