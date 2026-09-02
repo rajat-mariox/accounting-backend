@@ -7,12 +7,16 @@ const {
   updateInvoiceStatus,
   deleteInvoice,
 } = require('../controllers/invoiceController');
-const { protect } = require('../middleware/auth');
+const { protect, requirePermission } = require('../middleware/auth');
 
 router.use(protect);
 
-router.route('/').get(listInvoices).post(createInvoice);
-router.route('/:id').get(getInvoice).put(updateInvoice).delete(deleteInvoice);
-router.patch('/:id/status', updateInvoiceStatus);
+router.route('/').get(listInvoices).post(requirePermission('invoices', 'create'), createInvoice);
+router
+  .route('/:id')
+  .get(getInvoice)
+  .put(requirePermission('invoices', 'edit'), updateInvoice)
+  .delete(requirePermission('invoices', 'delete'), deleteInvoice);
+router.patch('/:id/status', requirePermission('invoices', 'edit'), updateInvoiceStatus);
 
 module.exports = router;

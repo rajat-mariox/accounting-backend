@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const asyncHandler = require('express-async-handler');
 const User = require('../models/User');
 const generateToken = require('../utils/generateToken');
+const { effectivePermissions } = require('../config/permissions');
 const { recordAudit } = require('../middleware/audit');
 
 const OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -280,6 +281,9 @@ function sanitize(user) {
   delete obj.resetOtpAttempts;
   delete obj.resetSessionTokenHash;
   delete obj.resetSessionExpiresAt;
+  // Always ship the resolved permission grid so the frontend never has to
+  // guess role presets for legacy users with an empty permissions field.
+  obj.permissions = effectivePermissions(user);
   return obj;
 }
 

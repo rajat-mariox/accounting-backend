@@ -6,14 +6,14 @@ const {
   updateUser,
   deleteUser,
 } = require('../controllers/userController');
-const { protect, authorize } = require('../middleware/auth');
+const { protect, requirePermission, denyClients } = require('../middleware/auth');
 
-router.use(protect);
+router.use(protect, denyClients);
 
-router.get('/', listUsers);
-router.get('/:id', getUser);
-router.post('/', authorize('Administrator'), createUser);
-router.put('/:id', authorize('Administrator'), updateUser);
-router.delete('/:id', authorize('Administrator'), deleteUser);
+router.get('/', requirePermission('users', 'view'), listUsers);
+router.get('/:id', requirePermission('users', 'view'), getUser);
+router.post('/', requirePermission('users', 'create'), createUser);
+router.put('/:id', requirePermission('users', 'edit'), updateUser);
+router.delete('/:id', requirePermission('users', 'delete'), deleteUser);
 
 module.exports = router;

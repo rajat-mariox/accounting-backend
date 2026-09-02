@@ -2,24 +2,22 @@ const asyncHandler = require('express-async-handler');
 const Warehouse = require('../models/Warehouse');
 const InventoryItem = require('../models/InventoryItem');
 const { recordAudit } = require('../middleware/audit');
+const { warehouseUsage } = require('../services/capacityService');
 
 // GET /api/warehouses
 const listWarehouses = asyncHandler(async (_req, res) => {
   const warehouses = await Warehouse.find().sort({ name: 1 }).lean();
-  const agg = await InventoryItem.aggregate([
-    { $match: { warehouse: { $ne: null } } },
-    {
-      $group: {
-        _id: '$warehouse',
-        totalItems: { $sum: 1 },
-        totalStock: { $sum: '$stock' },
-      },
-    },
-  ]);
-  const map = new Map(agg.map((a) => [String(a._id), a]));
+  // Totals come from the per-warehouse stock breakdown.
+  const map = await warehouseUsage();
   const enriched = warehouses.map((w) => {
     const a = map.get(String(w._id));
-    return { ...w, totalItems: a?.totalItems || 0, totalStock: a?.totalStock || 0 };
+    const totalStock = a?.totalStock || 0;
+    return {
+      ...w,
+      totalItems: a?.totalItems || 0,
+      totalStock,
+      freeCapacity: w.capacity > 0 ? Math.max(0, w.capacity - totalStock) : null,
+    };
   });
   res.json(enriched);
 });
@@ -57,6 +55,11 @@ const updateWarehouse = asyncHandler(async (req, res) => {
     { warehouse: warehouse._id },
     { $set: { warehouseName: warehouse.name } }
   );
+  await InventoryItem.updateMany(
+    { 'stocks.warehouse': warehouse._id },
+    { $set: { 'stocks.$[entry].warehouseName': warehouse.name } },
+    { arrayFilters: [{ 'entry.warehouse': warehouse._id }] }
+  );
   await recordAudit({
     user: req.user,
     action: 'Update',
@@ -73,7 +76,9 @@ const deleteWarehouse = asyncHandler(async (req, res) => {
     res.status(404);
     throw new Error('Warehouse not found');
   }
-  const itemCount = await InventoryItem.countDocuments({ warehouse: warehouse._id });
+  const itemCount = await InventoryItem.countDocuments({
+    $or: [{ warehouse: warehouse._id }, { 'stocks.warehouse': warehouse._id }],
+  });
   if (itemCount > 0) {
     res.status(400);
     throw new Error(`Cannot delete: ${itemCount} item(s) still reference this warehouse`);

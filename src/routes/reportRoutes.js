@@ -1,8 +1,8 @@
 const router = require('express').Router();
 const { dashboardSummary, salesReport, salesVsPurchase, topClients } = require('../controllers/reportController');
-const { protect } = require('../middleware/auth');
+const { protect, denyClients } = require('../middleware/auth');
 
-router.use(protect);
+router.use(protect, denyClients);
 
 router.get('/dashboard', dashboardSummary);
 router.get('/sales', salesReport);
