@@ -28,6 +28,10 @@ const invoiceSchema = new mongoose.Schema(
     taxRate: { type: Number, default: 0, min: 0, max: 100 },
     taxAmount: { type: Number, default: 0, min: 0 },
     amount: { type: Number, required: true, min: 0 },
+    // Currency the invoice is billed in, and its rate to the base currency
+    // (units per 1 base) saved at creation so old invoices never change.
+    currency: { type: String, uppercase: true, trim: true, default: 'USD' },
+    exchangeRate: { type: Number, default: 1, min: 0 },
     // Sum of recorded payments; status becomes 'partial' until it covers `amount`.
     amountPaid: { type: Number, default: 0, min: 0 },
     // Date the client promised to pay the (remaining) balance.

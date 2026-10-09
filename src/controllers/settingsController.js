@@ -2,8 +2,9 @@ const asyncHandler = require('express-async-handler');
 const Settings = require('../models/Settings');
 const InventoryItem = require('../models/InventoryItem');
 const { recordAudit } = require('../middleware/audit');
+const { CURRENCY_DEFAULTS, normalizeCurrencySettings } = require('../services/currencyService');
 
-const SETTING_KEYS = ['company', 'tax', 'inventory'];
+const SETTING_KEYS = ['company', 'tax', 'inventory', 'currency'];
 const DEFAULT_CATEGORY = 'Others';
 
 const DEFAULTS = {
@@ -20,6 +21,7 @@ const DEFAULTS = {
   inventory: {
     categories: ['Electronics', 'Accessories', 'Cables', DEFAULT_CATEGORY],
   },
+  currency: CURRENCY_DEFAULTS,
 };
 
 // Trim, drop blanks, dedupe case-insensitively, and guarantee the fallback category.
@@ -57,10 +59,12 @@ const getAllSettings = asyncHandler(async (_req, res) => {
   const company = await readSetting('company');
   const tax = await readSetting('tax');
   const inventory = await readSetting('inventory');
+  const currency = await readSetting('currency');
   res.json({
     company: company.value,
     tax: tax.value,
     inventory: { ...inventory.value, categories: normalizeCategories(inventory.value?.categories) },
+    currency: safeCurrency(currency.value),
   });
 });
 
@@ -76,6 +80,10 @@ const getSetting = asyncHandler(async (req, res) => {
     res.json({ ...doc.value, categories: normalizeCategories(doc.value?.categories) });
     return;
   }
+  if (key === 'currency') {
+    res.json(safeCurrency(doc.value));
+    return;
+  }
   res.json(doc.value);
 });
 
@@ -89,6 +97,8 @@ const updateSetting = asyncHandler(async (req, res) => {
   const doc = await readSetting(key);
   if (key === 'inventory') {
     await updateInventorySettings(doc, req.body, res);
+  } else if (key === 'currency') {
+    await updateCurrencySettings(doc, req.body, res);
   } else {
     doc.value = { ...doc.value, ...req.body };
   }
@@ -132,6 +142,54 @@ async function updateInventorySettings(doc, body, res) {
   }
 
   doc.value = { ...doc.value, categories: next };
+}
+
+function safeCurrency(value) {
+  try {
+    return normalizeCurrencySettings(value);
+  } catch {
+    return normalizeCurrencySettings(CURRENCY_DEFAULTS);
+  }
+}
+
+// Currency settings: base currency, list of currencies with exchange rates
+// (units per 1 base), decimals and date format.
+// The base cannot change once money records exist (their saved rates are relative
+// to it), and a currency still used by a client, invoice or supply cannot be removed.
+async function updateCurrencySettings(doc, body, res) {
+  const previous = safeCurrency(doc.value);
+  let next;
+  try {
+    next = normalizeCurrencySettings({ ...previous, ...body });
+  } catch (err) {
+    res.status(400);
+    throw err;
+  }
+  // Lazy requires avoid a circular import through the inventory controller.
+  const Invoice = require('../models/Invoice');
+  const Payment = require('../models/Payment');
+  const Client = require('../models/Client');
+  const { SupplyActivity } = require('../models/Supplier');
+  if (next.base !== previous.base) {
+    const used = (await Invoice.countDocuments()) + (await Payment.countDocuments()) + (await SupplyActivity.countDocuments());
+    if (used > 0) {
+      res.status(400);
+      throw new Error(`The base currency cannot change from ${previous.base} after invoices, payments or supplies exist`);
+    }
+  }
+  const kept = new Set(next.currencies.map((c) => c.code));
+  for (const old of previous.currencies) {
+    if (kept.has(old.code)) continue;
+    const inUse =
+      (await Invoice.countDocuments({ currency: old.code })) +
+      (await Client.countDocuments({ currency: old.code })) +
+      (await SupplyActivity.countDocuments({ currency: old.code }));
+    if (inUse > 0) {
+      res.status(400);
+      throw new Error(`Cannot remove ${old.code}: it is still used by ${inUse} client(s), invoice(s) or supply record(s)`);
+    }
+  }
+  doc.value = next;
 }
 
 module.exports = { getAllSettings, getSetting, updateSetting, getInventoryCategories, DEFAULT_CATEGORY };

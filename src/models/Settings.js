@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 const settingsSchema = new mongoose.Schema(
   {
-    key: { type: String, required: true, unique: true, enum: ['company', 'tax', 'inventory'] },
+    key: { type: String, required: true, unique: true, enum: ['company', 'tax', 'inventory', 'currency'] },
     value: { type: mongoose.Schema.Types.Mixed, default: {} },
   },
   { timestamps: true }

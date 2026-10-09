@@ -10,6 +10,8 @@ const clientSchema = new mongoose.Schema(
     // Pricing defaults applied to new invoices for this client (both editable per invoice).
     discountPercent: { type: Number, default: 0, min: 0, max: 100 },
     taxRate: { type: Number, default: 0, min: 0, max: 100 },
+    // Billing currency for new invoices (empty = the base currency).
+    currency: { type: String, uppercase: true, trim: true },
     // Portal login (User with role 'Client') created alongside the client.
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },

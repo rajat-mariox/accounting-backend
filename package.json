@@ -9,7 +9,8 @@
     "dev": "nodemon src/server.js",
     "seed": "node src/utils/seed.js",
     "migrate:stocks": "node src/utils/migrateStocks.js",
-    "renumber:invoices": "node src/utils/renumberInvoices.js"
+    "renumber:invoices": "node src/utils/renumberInvoices.js",
+    "clear:data": "node src/utils/clearData.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
