@@ -4,6 +4,7 @@ const Payment = require('../models/Payment');
 const Client = require('../models/Client');
 const InventoryItem = require('../models/InventoryItem');
 const { SupplyActivity, startOfToday } = require('../models/Supplier');
+const { toBaseExpr, toBase, getCurrencySettings } = require('../services/currencyService');
 const SUPPLIER_ALERT_LEAD_DAYS = 3;
 
 // GET /api/reports/dashboard
@@ -14,13 +15,13 @@ const dashboardSummary = asyncHandler(async (_req, res) => {
         {
           $group: {
             _id: '$status',
-            total: { $sum: '$amount' },
+            total: { $sum: toBaseExpr('$amount') },
             count: { $sum: 1 },
           },
         },
       ]),
       Payment.aggregate([
-        { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
+        { $group: { _id: null, total: { $sum: toBaseExpr('$amount') }, count: { $sum: 1 } } },
       ]),
       Client.countDocuments(),
       InventoryItem.countDocuments(),
@@ -35,11 +36,11 @@ const dashboardSummary = asyncHandler(async (_req, res) => {
     $expr: { $gt: ['$totalAmount', { $ifNull: ['$amountPaid', 0] }] },
     nextPaymentDate: { $ne: null },
   })
-    .select('totalAmount amountPaid nextPaymentDate')
+    .select('totalAmount amountPaid nextPaymentDate exchangeRate')
     .lean();
   const supplierPayments = { open: 0, outstanding: 0, overdue: 0, overdueAmount: 0, dueSoon: 0, dueSoonAmount: 0, dueToday: 0 };
   for (const a of openSupplies) {
-    const balance = Math.max(0, Number(a.totalAmount) - Number(a.amountPaid || 0));
+    const balance = toBase(Math.max(0, Number(a.totalAmount) - Number(a.amountPaid || 0)), a.exchangeRate);
     supplierPayments.open += 1;
     supplierPayments.outstanding += balance;
     if (a.nextPaymentDate < today) {
@@ -56,11 +57,13 @@ const dashboardSummary = asyncHandler(async (_req, res) => {
   const totalRevenue = paymentAgg[0]?.total || 0;
   const outstandingAgg = await Invoice.aggregate([
     { $match: { status: { $in: ['pending', 'partial', 'overdue'] } } },
-    { $group: { _id: null, total: { $sum: { $subtract: ['$amount', { $ifNull: ['$amountPaid', 0] }] } } } },
+    { $group: { _id: null, total: { $sum: toBaseExpr({ $subtract: ['$amount', { $ifNull: ['$amountPaid', 0] }] }) } } },
   ]);
   const outstanding = Math.max(0, outstandingAgg[0]?.total || 0);
 
+  const { base } = await getCurrencySettings();
   res.json({
+    baseCurrency: base,
     totalRevenue,
     outstanding,
     paidInvoices: byStatus.paid?.count || 0,
@@ -91,7 +94,7 @@ const salesReport = asyncHandler(async (req, res) => {
           year: { $year: '$createdDate' },
           month: { $month: '$createdDate' },
         },
-        total: { $sum: '$amount' },
+        total: { $sum: toBaseExpr('$amount') },
         count: { $sum: 1 },
       },
     },
@@ -115,7 +118,7 @@ const salesVsPurchase = asyncHandler(async (req, res) => {
       {
         $group: {
           _id: { y: { $year: '$createdDate' }, m: { $month: '$createdDate' } },
-          total: { $sum: '$amount' },
+          total: { $sum: toBaseExpr('$amount') },
         },
       },
     ]),
@@ -124,7 +127,7 @@ const salesVsPurchase = asyncHandler(async (req, res) => {
       {
         $group: {
           _id: { y: { $year: '$date' }, m: { $month: '$date' } },
-          total: { $sum: '$totalAmount' },
+          total: { $sum: toBaseExpr('$totalAmount') },
         },
       },
     ]),
@@ -155,7 +158,7 @@ const topClients = asyncHandler(async (_req, res) => {
       $group: {
         _id: '$client',
         clientName: { $first: '$clientName' },
-        total: { $sum: '$amount' },
+        total: { $sum: toBaseExpr('$amount') },
         invoices: { $sum: 1 },
       },
     },

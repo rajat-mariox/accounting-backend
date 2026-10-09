@@ -5,6 +5,8 @@ const Payment = require('../models/Payment');
 const { recordAudit } = require('../middleware/audit');
 const notificationService = require('../services/notificationService');
 const stockService = require('../services/stockService');
+const { startOfToday } = require('../models/Supplier');
+const { resolveCurrency, pickRate } = require('../services/currencyService');
 
 function parsePercent(value, label, res) {
   if (value === undefined || value === null || value === '') return undefined;
@@ -50,6 +52,10 @@ const createInvoice = asyncHandler(async (req, res) => {
     res.status(404);
     throw new Error('Client not found');
   }
+  // Currency defaults to the client's billing currency (else the base currency);
+  // its exchange rate is saved on the invoice so later rate changes never alter it.
+  const currencyInfo = await resolveCurrency(req.body.currency || clientDoc.currency, res);
+  const exchangeRate = pickRate(req.body.exchangeRate, currencyInfo.rate);
   // Discount and tax default to the client's settings but can be overridden per invoice.
   const totals = Invoice.computeTotals(
     items,
@@ -85,6 +91,8 @@ const createInvoice = asyncHandler(async (req, res) => {
     dueDate,
     items,
     ...totals,
+    currency: currencyInfo.code,
+    exchangeRate,
     amountPaid: 0,
     status: status || 'pending',
     stockDeducted: status !== 'cancelled',
@@ -108,6 +116,8 @@ const createInvoice = asyncHandler(async (req, res) => {
       mode: initialPayment.mode,
       reference: initialPayment.reference,
       date: invoice.createdDate,
+      currency: invoice.currency,
+      exchangeRate: invoice.exchangeRate,
     });
     invoice.applyPaid(paidNow);
     await invoice.save();
@@ -198,8 +208,29 @@ const updateInvoiceStatus = asyncHandler(async (req, res) => {
     invoice.stockDeducted = true;
   }
   invoice.status = status;
-  // "Mark paid" settles the full amount; reopening keeps whatever was actually paid.
+  // "Mark paid" settles the outstanding balance with a real Cash payment record, so
+  // the Payments page and the invoice's paid amount always agree.
+  let settlement = null;
   if (status === 'paid') {
+    const paidAgg = await Payment.aggregate([
+      { $match: { invoice: invoice._id } },
+      { $group: { _id: null, sum: { $sum: '$amount' } } },
+    ]);
+    const alreadyPaid = Math.round((paidAgg[0]?.sum || 0) * 100) / 100;
+    const outstanding = Math.round((Number(invoice.amount || 0) - alreadyPaid) * 100) / 100;
+    if (outstanding > 0.005) {
+      settlement = await Payment.create({
+        invoice: invoice._id,
+        invoiceNumber: invoice.invoiceNumber,
+        amount: outstanding,
+        mode: 'Cash',
+        reference: 'Marked as paid',
+        currency: invoice.currency,
+        exchangeRate: invoice.exchangeRate,
+        // Date only (UTC midnight of today), like payments entered through the forms.
+        date: startOfToday(),
+      });
+    }
     invoice.amountPaid = invoice.amount;
     invoice.nextPaymentDate = undefined;
   } else if (status !== 'cancelled') invoice.applyPaid(invoice.amountPaid);
@@ -210,6 +241,15 @@ const updateInvoiceStatus = asyncHandler(async (req, res) => {
     module: 'Invoices',
     details: `Set invoice ${invoice.invoiceNumber} to ${status}`,
   });
+  if (settlement) {
+    await recordAudit({
+      user: req.user,
+      action: 'Create',
+      module: 'Payments',
+      details: `Recorded Cash payment of ${settlement.amount} for ${invoice.invoiceNumber} (marked as paid)`,
+    });
+    await notificationService.notifyPaymentRecorded(settlement, invoice);
+  }
   if (status === 'paid') {
     await notificationService.notifyInvoicePaid(invoice);
   }

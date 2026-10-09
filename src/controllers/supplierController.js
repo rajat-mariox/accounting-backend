@@ -2,6 +2,7 @@ const asyncHandler = require('express-async-handler');
 const { Supplier, SupplyActivity } = require('../models/Supplier');
 const { recordAudit } = require('../middleware/audit');
 const notificationService = require('../services/notificationService');
+const { resolveCurrency, pickRate, toBaseExpr } = require('../services/currencyService');
 
 function parseDate(value, label, res) {
   if (value === undefined || value === null || value === '') return undefined;
@@ -21,8 +22,9 @@ const listSuppliers = asyncHandler(async (req, res) => {
       $group: {
         _id: '$supplier',
         activities: { $sum: 1 },
-        total: { $sum: '$totalAmount' },
-        paid: { $sum: '$amountPaid' },
+        // Supplies can be in different currencies, so totals are in the base currency.
+        total: { $sum: toBaseExpr('$totalAmount') },
+        paid: { $sum: toBaseExpr('$amountPaid') },
       },
     },
   ]);
@@ -107,10 +109,97 @@ const listActivities = asyncHandler(async (_req, res) => {
   res.json(activities);
 });
 
+// GET /api/suppliers/payments
+// Every installment paid to a supplier, flattened across supply activities, newest first.
+const listSupplierPayments = asyncHandler(async (_req, res) => {
+  const activities = await SupplyActivity.find({ 'payments.0': { $exists: true } }).lean();
+  const rows = [];
+  for (const activity of activities) {
+    for (const installment of activity.payments || []) {
+      rows.push({
+        id: String(installment._id),
+        activity: String(activity._id),
+        supplier: String(activity.supplier),
+        supplierName: activity.supplierName,
+        item: activity.item,
+        invoiceNumber: activity.invoiceNumber,
+        currency: activity.currency,
+        exchangeRate: activity.exchangeRate,
+        amount: installment.amount,
+        date: installment.date,
+        reference: installment.reference,
+        attachment: installment.attachment
+          ? { name: installment.attachment.name, mimeType: installment.attachment.mimeType, size: installment.attachment.size }
+          : undefined,
+      });
+    }
+  }
+  // Newest first; installments on the same day by recording order (ObjectIds increase over time).
+  rows.sort((a, b) => new Date(b.date) - new Date(a.date) || b.id.localeCompare(a.id));
+  res.json(rows);
+});
+
+const ATTACHMENT_TYPES = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp'];
+const ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
+
+// Body field `attachment: { name, mimeType, data }` where data is base64.
+// Returns undefined when nothing was attached; throws a 400 on bad input.
+function parseAttachment(input, res) {
+  if (!input || !input.data) return undefined;
+  const mimeType = String(input.mimeType || '').toLowerCase();
+  if (!ATTACHMENT_TYPES.includes(mimeType)) {
+    res.status(400);
+    throw new Error('Invoice attachment must be a PDF, PNG, JPG, or WEBP file');
+  }
+  const base64 = String(input.data).replace(/^data:[^;]+;base64,/, '');
+  const buffer = Buffer.from(base64, 'base64');
+  if (buffer.length === 0) {
+    res.status(400);
+    throw new Error('Invoice attachment is empty');
+  }
+  if (buffer.length > ATTACHMENT_MAX_BYTES) {
+    res.status(400);
+    throw new Error('Invoice attachment must be 5 MB or smaller');
+  }
+  const name = String(input.name || 'supplier-invoice').trim().slice(0, 200);
+  return { name, mimeType, size: buffer.length, data: buffer };
+}
+
+function sendAttachment(res, attachment) {
+  const { name, mimeType, data } = attachment;
+  res.set('Content-Type', mimeType || 'application/octet-stream');
+  res.set('Content-Disposition', `inline; filename="${encodeURIComponent(name || 'supplier-invoice')}"`);
+  res.send(data);
+}
+
+// GET /api/suppliers/activities/:id/attachment — streams the invoice attached to the supply.
+const getActivityAttachment = asyncHandler(async (req, res) => {
+  const activity = await SupplyActivity.findById(req.params.id).select('+attachment.data');
+  if (!activity || !activity.attachment || !activity.attachment.data) {
+    res.status(404);
+    throw new Error('No invoice is attached to this supply');
+  }
+  sendAttachment(res, activity.attachment);
+});
+
+// GET /api/suppliers/activities/:id/payments/:paymentId/attachment — invoice attached to one installment.
+const getInstallmentAttachment = asyncHandler(async (req, res) => {
+  const activity = await SupplyActivity.findById(req.params.id).select('+payments.attachment.data');
+  const installment = activity?.payments.id(req.params.paymentId);
+  if (!installment || !installment.attachment || !installment.attachment.data) {
+    res.status(404);
+    throw new Error('No invoice is attached to this payment');
+  }
+  sendAttachment(res, installment.attachment);
+});
+
 // POST /api/suppliers/activities
 // Body: { supplier, item, quantity, pricePerUnit, date?, invoiceNumber?, amountPaid?, nextPaymentDate? }
 const createActivity = asyncHandler(async (req, res) => {
   const { supplier, item, quantity, pricePerUnit, date, invoiceNumber, amountPaid, nextPaymentDate } = req.body;
+  const attachment = parseAttachment(req.body.attachment, res);
+  const currencyInfo = await resolveCurrency(req.body.currency, res);
+  const exchangeRate = pickRate(req.body.exchangeRate, currencyInfo.rate);
   if (!supplier || !item || !quantity || pricePerUnit === undefined) {
     res.status(400);
     throw new Error('supplier, item, quantity, and pricePerUnit are required');
@@ -144,20 +233,25 @@ const createActivity = asyncHandler(async (req, res) => {
     quantity,
     pricePerUnit,
     totalAmount,
+    currency: currencyInfo.code,
+    exchangeRate,
     date: date || new Date(),
     invoiceNumber: invoiceNumber ? String(invoiceNumber).trim() : undefined,
     amountPaid: paid,
     nextPaymentDate: remaining > 0 ? promised : undefined,
     payments: paid > 0 ? [{ amount: paid, date: date || new Date(), reference: 'Initial payment' }] : [],
+    attachment,
   });
   activity.recomputeStatus();
   await activity.save();
+  // Never echo the file bytes back in the JSON response.
+  if (activity.attachment) activity.attachment.data = undefined;
 
   await recordAudit({
     user: req.user,
     action: 'Create',
     module: 'Suppliers',
-    details: `Recorded supply activity: ${item} x${quantity} (paid ${paid.toFixed(2)}, remaining ${remaining.toFixed(2)})`,
+    details: `Recorded supply activity: ${item} x${quantity} (paid ${paid.toFixed(2)}, remaining ${remaining.toFixed(2)})${attachment ? `, invoice attached: ${attachment.name}` : ''}`,
   });
   await notificationService.notifySupplyRecorded(activity);
   res.status(201).json(activity);
@@ -172,6 +266,7 @@ const recordActivityPayment = asyncHandler(async (req, res) => {
     throw new Error('Supply activity not found');
   }
   const { amount, date, reference, nextPaymentDate } = req.body;
+  const attachment = parseAttachment(req.body.attachment, res);
   const value = Number(amount);
   if (!Number.isFinite(value) || value <= 0) {
     res.status(400);
@@ -194,17 +289,20 @@ const recordActivityPayment = asyncHandler(async (req, res) => {
     throw new Error('Next payment date is required while a balance remains');
   }
 
-  activity.payments.push({ amount: value, date: paidOn, reference });
+  activity.payments.push({ amount: value, date: paidOn, reference, attachment });
   activity.amountPaid = Math.round((Number(activity.amountPaid || 0) + value) * 100) / 100;
   activity.nextPaymentDate = remaining > 0 ? promised : undefined;
   activity.recomputeStatus();
   await activity.save();
+  // Never echo the file bytes back in the JSON response.
+  const added = activity.payments[activity.payments.length - 1];
+  if (added.attachment) added.attachment.data = undefined;
 
   await recordAudit({
     user: req.user,
     action: 'Update',
     module: 'Suppliers',
-    details: `Paid ${value.toFixed(2)} to ${activity.supplierName} for ${activity.item} (remaining ${remaining.toFixed(2)})`,
+    details: `Paid ${value.toFixed(2)} to ${activity.supplierName} for ${activity.item} (remaining ${remaining.toFixed(2)})${attachment ? `, invoice attached: ${attachment.name}` : ''}`,
   });
   await notificationService.notifySupplyPaymentRecorded(activity, value);
   res.json(activity);
@@ -217,6 +315,9 @@ module.exports = {
   updateSupplier,
   deleteSupplier,
   listActivities,
+  listSupplierPayments,
+  getActivityAttachment,
+  getInstallmentAttachment,
   createActivity,
   recordActivityPayment,
 };

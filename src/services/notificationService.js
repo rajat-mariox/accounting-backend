@@ -11,8 +11,8 @@ function formatDay(date) {
   return date ? new Date(date).toISOString().slice(0, 10) : '';
 }
 
-function money(value) {
-  return Number(value || 0).toFixed(2);
+function money(value, currency) {
+  return `${currency ? `${currency} ` : ''}${Number(value || 0).toFixed(2)}`;
 }
 
 // Create or update a notification. If `key` is provided, the operation is
@@ -64,7 +64,7 @@ async function refreshSystemAlerts() {
     status: { $nin: ['paid', 'cancelled'] },
     dueDate: { $lt: startOfToday() },
   })
-    .select('_id client invoiceNumber clientName amount amountPaid dueDate status')
+    .select('_id client invoiceNumber clientName amount amountPaid dueDate status currency')
     .lean();
 
   // Mark them as overdue in the DB so the badge stays accurate.
@@ -150,7 +150,7 @@ async function refreshClientInvoiceAlerts() {
   const soon = new Date(today.getTime() + (SUPPLIER_ALERT_LEAD_DAYS + 1) * DAY_MS);
 
   const open = await Invoice.find({ status: { $nin: ['paid', 'cancelled'] }, dueDate: { $lt: soon } })
-    .select('_id client invoiceNumber amount amountPaid dueDate')
+    .select('_id client invoiceNumber amount amountPaid dueDate currency')
     .lean();
 
   const jobs = [];
@@ -163,7 +163,7 @@ async function refreshClientInvoiceAlerts() {
       jobs.push(
         emit({
           title: 'Invoice Overdue',
-          description: `Invoice ${inv.invoiceNumber} — ${money(balance)} was due on ${formatDay(inv.dueDate)}. Please arrange payment.`,
+          description: `Invoice ${inv.invoiceNumber} — ${money(balance, inv.currency)} was due on ${formatDay(inv.dueDate)}. Please arrange payment.`,
           tone: 'danger',
           category: 'Overdue',
           key: `client-overdue:${inv._id}`,
@@ -179,8 +179,8 @@ async function refreshClientInvoiceAlerts() {
         emit({
           title: dueToday ? 'Invoice Due Today' : 'Invoice Due Soon',
           description: dueToday
-            ? `Invoice ${inv.invoiceNumber} — ${money(balance)} is due today.`
-            : `Invoice ${inv.invoiceNumber} — ${money(balance)} is due on ${formatDay(inv.dueDate)}.`,
+            ? `Invoice ${inv.invoiceNumber} — ${money(balance, inv.currency)} is due today.`
+            : `Invoice ${inv.invoiceNumber} — ${money(balance, inv.currency)} is due on ${formatDay(inv.dueDate)}.`,
           tone: 'warning',
           category: 'Invoice',
           key: `client-due:${inv._id}`,
@@ -209,7 +209,7 @@ async function refreshSupplierPaymentAlerts() {
     $expr: { $gt: ['$totalAmount', { $ifNull: ['$amountPaid', 0] }] },
     nextPaymentDate: { $ne: null },
   })
-    .select('_id supplierName item totalAmount amountPaid nextPaymentDate paymentStatus')
+    .select('_id supplierName item totalAmount amountPaid nextPaymentDate paymentStatus currency')
     .lean();
 
   // Overdue = promised date is before today. Due soon = today .. today + lead days.
@@ -235,7 +235,7 @@ async function refreshSupplierPaymentAlerts() {
     ...overdue.map((a) =>
       emit({
         title: 'Supplier Payment Overdue',
-        description: `${money(a.totalAmount - (a.amountPaid || 0))} still owed to ${a.supplierName} for ${a.item} — was due ${formatDay(a.nextPaymentDate)}`,
+        description: `${money(a.totalAmount - (a.amountPaid || 0), a.currency)} still owed to ${a.supplierName} for ${a.item} — was due ${formatDay(a.nextPaymentDate)}`,
         tone: 'danger',
         category: 'SupplierPayment',
         key: `supplier-overdue:${a._id}`,
@@ -247,8 +247,8 @@ async function refreshSupplierPaymentAlerts() {
       emit({
         title: a.nextPaymentDate < tomorrow ? 'Supplier Payment Due Today' : 'Supplier Payment Due Soon',
         description: a.nextPaymentDate < tomorrow
-          ? `${money(a.totalAmount - (a.amountPaid || 0))} to ${a.supplierName} for ${a.item} is due today`
-          : `${money(a.totalAmount - (a.amountPaid || 0))} to ${a.supplierName} for ${a.item} is due on ${formatDay(a.nextPaymentDate)}`,
+          ? `${money(a.totalAmount - (a.amountPaid || 0), a.currency)} to ${a.supplierName} for ${a.item} is due today`
+          : `${money(a.totalAmount - (a.amountPaid || 0), a.currency)} to ${a.supplierName} for ${a.item} is due on ${formatDay(a.nextPaymentDate)}`,
         tone: 'warning',
         category: 'SupplierPayment',
         key: `supplier-due:${a._id}`,
@@ -286,8 +286,8 @@ async function refreshSupplierPaymentAlerts() {
 async function notifySupplyRecorded(activity) {
   const balance = Math.max(0, Number(activity.totalAmount) - Number(activity.amountPaid || 0));
   const description = balance > 0
-    ? `${activity.item} x${activity.quantity} from ${activity.supplierName}: paid ${money(activity.amountPaid)}, ${money(balance)} remaining, next payment ${formatDay(activity.nextPaymentDate)}`
-    : `${activity.item} x${activity.quantity} from ${activity.supplierName}: ${money(activity.totalAmount)} paid in full`;
+    ? `${activity.item} x${activity.quantity} from ${activity.supplierName}: paid ${money(activity.amountPaid, activity.currency)}, ${money(balance, activity.currency)} remaining, next payment ${formatDay(activity.nextPaymentDate)}`
+    : `${activity.item} x${activity.quantity} from ${activity.supplierName}: ${money(activity.totalAmount, activity.currency)} paid in full`;
   return emit({
     title: 'Supply Recorded',
     description,
@@ -306,8 +306,8 @@ async function notifySupplyPaymentRecorded(activity, amount) {
   return emit({
     title: balance > 0 ? 'Supplier Installment Paid' : 'Supplier Fully Paid',
     description: balance > 0
-      ? `Paid ${money(amount)} to ${activity.supplierName} for ${activity.item}; ${money(balance)} remaining, next payment ${formatDay(activity.nextPaymentDate)}`
-      : `Paid ${money(amount)} to ${activity.supplierName} for ${activity.item}; balance cleared`,
+      ? `Paid ${money(amount, activity.currency)} to ${activity.supplierName} for ${activity.item}; ${money(balance, activity.currency)} remaining, next payment ${formatDay(activity.nextPaymentDate)}`
+      : `Paid ${money(amount, activity.currency)} to ${activity.supplierName} for ${activity.item}; balance cleared`,
     tone: 'success',
     category: 'SupplierPayment',
     link: '/suppliers',
@@ -320,7 +320,7 @@ async function notifyInvoiceCreated(invoice) {
   if (invoice.client) {
     await emit({
       title: 'New Invoice',
-      description: `Invoice ${invoice.invoiceNumber} for ${money(invoice.amount)} is due on ${formatDay(invoice.dueDate)}`,
+      description: `Invoice ${invoice.invoiceNumber} for ${money(invoice.amount, invoice.currency)} is due on ${formatDay(invoice.dueDate)}`,
       tone: 'info',
       category: 'Invoice',
       link: '/invoices',
@@ -367,8 +367,8 @@ async function notifyPaymentRecorded(payment, invoice) {
     await emit({
       title: 'Payment Received',
       description: balance > 0
-        ? `We received ${money(payment.amount)} for invoice ${invoice.invoiceNumber}; ${money(balance)} remains due on ${formatDay(invoice.dueDate)}`
-        : `We received ${money(payment.amount)} for invoice ${invoice.invoiceNumber}`,
+        ? `We received ${money(payment.amount, invoice.currency)} for invoice ${invoice.invoiceNumber}; ${money(balance, invoice.currency)} remains due on ${formatDay(invoice.dueDate)}`
+        : `We received ${money(payment.amount, invoice.currency)} for invoice ${invoice.invoiceNumber}`,
       tone: 'success',
       category: 'Payment',
       link: '/payments',

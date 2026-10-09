@@ -13,11 +13,24 @@ const supplierSchema = new mongoose.Schema(
 
 const PAYMENT_STATUSES = ['pending', 'partial', 'paid', 'overdue'];
 
+// Supplier invoice/receipt (PDF/image) attached to a supply or to one of its installments.
+// The file bytes are excluded from normal queries so lists stay light.
+const attachmentSchema = new mongoose.Schema(
+  {
+    name: { type: String, trim: true },
+    mimeType: { type: String },
+    size: { type: Number },
+    data: { type: Buffer, select: false },
+  },
+  { _id: false }
+);
+
 const installmentSchema = new mongoose.Schema(
   {
     amount: { type: Number, required: true, min: 0 },
     date: { type: Date, default: Date.now },
     reference: { type: String, trim: true },
+    attachment: { type: attachmentSchema, default: undefined },
   },
   { _id: true }
 );
@@ -31,12 +44,17 @@ const supplyActivitySchema = new mongoose.Schema(
     quantity: { type: Number, required: true, min: 0 },
     pricePerUnit: { type: Number, required: true, min: 0 },
     totalAmount: { type: Number, required: true, min: 0 },
+    // Currency of this supply (all its amounts and installments) and its rate to
+    // the base currency saved at recording time.
+    currency: { type: String, uppercase: true, trim: true, default: 'USD' },
+    exchangeRate: { type: Number, default: 1, min: 0 },
     invoiceNumber: { type: String, trim: true },
     // Payment tracking: how much has been paid so far, and when the rest is promised.
     amountPaid: { type: Number, default: 0, min: 0 },
     nextPaymentDate: { type: Date },
     paymentStatus: { type: String, enum: PAYMENT_STATUSES, default: 'pending' },
     payments: { type: [installmentSchema], default: [] },
+    attachment: { type: attachmentSchema, default: undefined },
   },
   { timestamps: true }
 );

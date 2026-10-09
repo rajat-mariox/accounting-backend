@@ -3,6 +3,7 @@ const Client = require('../models/Client');
 const Invoice = require('../models/Invoice');
 const User = require('../models/User');
 const { recordAudit } = require('../middleware/audit');
+const { resolveCurrency } = require('../services/currencyService');
 
 const MIN_PASSWORD = 6;
 
@@ -55,7 +56,7 @@ const getClient = asyncHandler(async (req, res) => {
   }
   const invoiceHistory = await Invoice.find({ client: client._id })
     .sort({ createdDate: -1 })
-    .select('invoiceNumber createdDate amount status');
+    .select('invoiceNumber createdDate amount status currency');
   const login = client.user ? await User.findById(client.user).select('email status lastLogin') : null;
   res.json({ ...client.toObject(), invoiceHistory, login });
 });
@@ -63,6 +64,7 @@ const getClient = asyncHandler(async (req, res) => {
 // POST /api/clients
 const createClient = asyncHandler(async (req, res) => {
   const { name, company, email, phone, address, password, discountPercent, taxRate } = req.body;
+  const currency = req.body.currency ? (await resolveCurrency(req.body.currency, res)).code : undefined;
   if (!name) {
     res.status(400);
     throw new Error('Name is required');
@@ -78,7 +80,7 @@ const createClient = asyncHandler(async (req, res) => {
   }
   await assertEmailFree(email, res);
 
-  const client = await Client.create({ name, company, email, phone, address, ...pricing });
+  const client = await Client.create({ name, company, email, phone, address, currency, ...pricing });
   try {
     const portalUser = await User.create({
       name,
@@ -130,6 +132,9 @@ const updateClient = asyncHandler(async (req, res) => {
     if (req.body[field] !== undefined) client[field] = req.body[field];
   });
   Object.assign(client, validatePricing(req.body, res));
+  if (req.body.currency !== undefined) {
+    client.currency = req.body.currency ? (await resolveCurrency(req.body.currency, res)).code : undefined;
+  }
   await client.save();
 
   // Keep the portal login in sync; create one for clients that predate logins

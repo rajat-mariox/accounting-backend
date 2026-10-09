@@ -3,6 +3,7 @@ const Payment = require('../models/Payment');
 const Invoice = require('../models/Invoice');
 const { recordAudit } = require('../middleware/audit');
 const notificationService = require('../services/notificationService');
+const { resolveCurrency } = require('../services/currencyService');
 
 // GET /api/payments
 const listPayments = asyncHandler(async (req, res) => {
@@ -12,13 +13,33 @@ const listPayments = asyncHandler(async (req, res) => {
     const ownInvoiceIds = await Invoice.find({ client: req.user.client }).distinct('_id');
     filter.invoice = { $in: ownInvoiceIds };
   }
-  const payments = await Payment.find(filter).sort({ date: -1 });
+  // Newest first; payments on the same day keep the order they were recorded in.
+  const payments = await Payment.find(filter).sort({ date: -1, createdAt: -1, _id: -1 });
   res.json(payments);
 });
 
 // POST /api/payments
 const createPayment = asyncHandler(async (req, res) => {
-  const { invoice, amount, mode, reference, date } = req.body;
+  const { invoice, mode, reference, date } = req.body;
+  let { amount } = req.body;
+  // Paid in another currency: { amount, currency, rate } where rate is units of that
+  // currency per 1 unit of the invoice currency. The invoice is credited amount / rate.
+  let received;
+  if (req.body.received && req.body.received.amount !== undefined && req.body.received.amount !== '') {
+    const recvAmount = Number(req.body.received.amount);
+    const recvRate = Number(req.body.received.rate);
+    if (!Number.isFinite(recvAmount) || recvAmount <= 0) {
+      res.status(400);
+      throw new Error('Amount received must be greater than 0');
+    }
+    if (!Number.isFinite(recvRate) || recvRate <= 0) {
+      res.status(400);
+      throw new Error('Exchange rate must be greater than 0');
+    }
+    const recvCurrency = (await resolveCurrency(req.body.received.currency, res)).code;
+    received = { amount: recvAmount, currency: recvCurrency, rate: recvRate };
+    amount = Math.round((recvAmount / recvRate) * 100) / 100;
+  }
   if (!invoice || amount === undefined || !mode) {
     res.status(400);
     throw new Error('invoice, amount, and mode are required');
@@ -53,6 +74,9 @@ const createPayment = asyncHandler(async (req, res) => {
     mode,
     reference,
     date: date || new Date(),
+    currency: invoiceDoc.currency,
+    exchangeRate: invoiceDoc.exchangeRate,
+    received,
   });
 
   // Partial payments: track the running total; status becomes partial/paid accordingly.
